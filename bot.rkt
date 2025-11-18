@@ -1,12 +1,19 @@
-#lang racket
+#lang racket/base
 
-(require racket-cord)
+(require (for-syntax racket/base)
+         racket-cord
+         racket/file
+         racket/string)
 
-(define star-name "⭐")
-(define starboard-channel-id "123412341234") ;;put channel id here
+(define (?? pred obj)
+  (if (pred obj) obj #f))
 
-;;feed an association list here, but I'm not your dad
-(define secrets (make-hash (file->value ".env"))) 
+(define star-name "⭐") ;;what emojo should the starboard react to?
+(define guild-id "1234") ;;put guild id here
+(define starboard-channel-id "1234") ;;put channel id here
+
+;;feed an association list here, but I'm not your dad, do it however you like
+(define secrets (make-hash (file->value ".env")))
 (define token (hash-ref secrets 'token))
 
 (define starred-messages (make-hash))
@@ -21,31 +28,25 @@
              [(string=? (hash-ref (hash-ref i 'emoji) 'name) star-name) (hash-ref i 'count)]
              [else 0])))
 
-(define (get-author-nick client guild-id id)
-  (define response (http:get-guild-member client guild-id id))
-  (hash-ref response 'nick))
-
-(define (get-author-name client guild-id id)
-  (define response (http:get-guild-member client guild-id id))
-  (hash-ref (hash-ref response 'user) 'global_name))
-
 (define starboard-bot
-  (make-client (symbol->string token) #:intents '(36353) #:token-type 'bot #:auto-shard #t))
+  (make-client (symbol->string token) #:intents '(1024) #:token-type 'bot #:auto-shard #t))
 
 (define (on-star-react _ws-client _client data)
   (define emoji (hash-ref (hash-ref data 'emoji) 'name))
   (define message-id (hash-ref data 'message_id))
   (define channel-id (hash-ref data 'channel_id))
-  (define guild-id (hash-ref data 'guild_id))
   (define message-data (http:get-channel-message _client channel-id message-id))
   (define author-id (hash-ref (hash-ref message-data 'author) 'id))
-  (define author-nick (get-author-nick _client guild-id author-id))
-  (define author-name (get-author-name _client guild-id author-id))
+  (define message-author (http:get-guild-member _client guild-id author-id))
   (define number-of-stars (extract-stars message-data))
   (define mention
     (string-join (list star-name
                        " **"
-                       ((lambda () (if (symbol? author-nick) author-name author-nick)))
+                       ((λ ()
+                          (cond
+                            [(?? string? (hash-ref message-author 'nick))]
+                            [(?? string? (hash-ref (hash-ref message-author 'user) 'global_name))]
+                            [else (hash-ref (hash-ref message-author 'user) 'username)])))
                        "** "
                        star-name)))
   (cond
@@ -59,25 +60,18 @@
                           #:reply-to (make-hash (list (cons 'channel_id channel-id)
                                                       (cons 'guild_id guild-id)
                                                       (cons 'message_id message-id)
-                                                      (cons 'type 1))))])
-  (hash-set! starred-messages message-id #f))
+                                                      (cons 'type 1))))
+     (hash-set! starred-messages message-id #f)]))
 
 (on-event 'raw-message-reaction-add starboard-bot on-star-react)
 
-(define dr (make-log-receiver discord-logger 'debug))
-
-(thread (thunk (let loop ()
-                 (let ([v (sync dr)]) (printf "[~a] ~a\n" (vector-ref v 0) (vector-ref v 1)))
-                 (loop))))
-
 (with-handlers
     ([exn:break?
-      (lambda (e)
+      (λ (e)
         (begin
           (update-status starboard-bot #:since (current-milliseconds) #:status "offline" #:afk #t)
           (stop-client starboard-bot)
           (sleep 1)
-          (display "oof\n")
           (abort-current-continuation (default-continuation-prompt-tag) void)))])
   (begin
     (start-client starboard-bot)
